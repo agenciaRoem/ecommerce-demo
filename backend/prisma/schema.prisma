@@ -1,0 +1,441 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────── Enums ─────────
+enum RoleName {
+  SUPERADMIN
+  GERENTE
+  SALA
+  STOCKEO
+  ENCARGADO_STOCK // alta y edición de productos, sin stock ni precios
+}
+
+enum CustomerType {
+  RETAIL
+  COMMERCE
+}
+
+enum DeliveryMethod {
+  PICKUP // retiro en sucursal
+  SHIPPING // envío a domicilio (solo B2B)
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PENDING // pagado, esperando preparación
+  IN_PREPARATION
+  READY_FOR_PICKUP
+  READY_FOR_FREIGHT
+  COMPLETED
+  CANCELLED
+}
+
+enum MovementReason {
+  INITIAL // stock inicial al crear el producto en la sucursal
+  INTAKE // ingreso de mercadería
+  ADJUSTMENT // ajuste manual
+  SALE // salida por una venta confirmada (pago aprobado)
+}
+
+enum PaymentProvider {
+  MERCADOPAGO
+}
+
+enum PaymentMode {
+  SANDBOX
+  PRODUCTION
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+enum PromotionAudience {
+  ALL
+  RETAIL
+  COMMERCE
+}
+
+enum PromotionScope {
+  ALL // todo el catálogo
+  CATEGORY // una categoría
+  PRODUCTS // productos puntuales
+}
+
+// ───────── Sucursales y personal ─────────
+model Branch {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  code      String   @unique // ej. "CEN", "NOR"
+  address   String
+  phone     String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users       User[]
+  inventories BranchInventory[]
+  orders      Order[]
+  promotions  Promotion[]
+  movements   StockMovement[]
+
+  @@map("branches")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        RoleName @unique
+  description String?
+
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  fullName     String   @map("full_name")
+  roleId       String   @map("role_id") @db.Uuid
+  branchId     String?  @map("branch_id") @db.Uuid // null solo para SUPERADMIN (global)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  role         Role                 @relation(fields: [roleId], references: [id])
+  branch       Branch?              @relation(fields: [branchId], references: [id])
+  movements    StockMovement[]
+  auditLogs    AuditLog[]
+  orderEvents  OrderStatusEvent[]
+  gateways     PaymentGateway[]
+  priceChanges ProductPriceChange[]
+
+  @@index([branchId, roleId])
+  @@map("users")
+}
+
+// ───────── Clientes (Retail vs B2B) ─────────
+model Customer {
+  id              String       @id @default(uuid()) @db.Uuid
+  type            CustomerType
+  email           String       @unique
+  passwordHash    String       @map("password_hash")
+  fullName        String       @map("full_name")
+  phone           String?
+  // Solo COMMERCE
+  businessName    String?      @map("business_name")
+  cuit            String?      @unique
+  cuitVerified    Boolean      @default(false) @map("cuit_verified")
+  // Cuándo se comprobó que el email es de quien se registró (link del correo o ingreso con Google).
+  emailVerifiedAt DateTime?    @map("email_verified_at")
+  shippingAddress String?      @map("shipping_address")
+  isActive        Boolean      @default(true) @map("is_active")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  orders Order[]
+
+  @@map("customers")
+}
+
+// ───────── Catálogo ─────────
+model Category {
+  id       String  @id @default(uuid()) @db.Uuid
+  name     String  @unique
+  slug     String  @unique
+  parentId String? @map("parent_id") @db.Uuid
+
+  parent     Category?   @relation("CategoryTree", fields: [parentId], references: [id])
+  children   Category[]  @relation("CategoryTree")
+  products   Product[]
+  promotions Promotion[]
+
+  @@map("categories")
+}
+
+model Product {
+  id             String   @id @default(uuid()) @db.Uuid
+  sku            String   @unique
+  barcode        String?  @unique
+  name           String
+  description    String?
+  categoryId     String   @map("category_id") @db.Uuid
+  imageKey       String?  @map("image_key") // clave de almacenamiento, no URL (independiente del proveedor)
+  cost           Decimal  @db.Decimal(12, 2) // costo de compra
+  retailPrice    Decimal  @map("retail_price") @db.Decimal(12, 2)
+  wholesalePrice Decimal  @map("wholesale_price") @db.Decimal(12, 2) // precio B2B
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  category     Category             @relation(fields: [categoryId], references: [id])
+  inventories  BranchInventory[]
+  orderItems   OrderItem[]
+  promotions   PromotionProduct[]
+  movements    StockMovement[]
+  priceChanges ProductPriceChange[]
+
+  @@index([categoryId, isActive])
+  @@map("products")
+}
+
+// ───────── Promociones / descuentos por evento ─────────
+model Promotion {
+  id           String            @id @default(uuid()) @db.Uuid
+  name         String // ej. "Vuelta a clases", "Black Friday"
+  description  String?
+  discountType DiscountType      @map("discount_type")
+  value        Decimal           @db.Decimal(12, 2) // porcentaje (0-100) o monto fijo por unidad
+  audience     PromotionAudience @default(ALL)
+  scope        PromotionScope    @default(ALL)
+  categoryId   String?           @map("category_id") @db.Uuid // si scope = CATEGORY
+  branchId     String?           @map("branch_id") @db.Uuid // null = todas las sucursales
+  startsAt     DateTime          @map("starts_at")
+  endsAt       DateTime          @map("ends_at")
+  isActive     Boolean           @default(true) @map("is_active")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  category   Category?          @relation(fields: [categoryId], references: [id])
+  branch     Branch?            @relation(fields: [branchId], references: [id])
+  products   PromotionProduct[] // si scope = PRODUCTS
+  orderItems OrderItem[]
+
+  // CHECK (ends_at > starts_at, value > 0, % <= 100, coherencia scope/categoryId) → SQL de la migración
+  @@index([isActive, startsAt, endsAt])
+  @@index([branchId])
+  @@map("promotions")
+}
+
+model PromotionProduct {
+  promotionId String @map("promotion_id") @db.Uuid
+  productId   String @map("product_id") @db.Uuid
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([promotionId, productId])
+  @@index([productId])
+  @@map("promotion_products")
+}
+
+// ───────── Inventario por sucursal ─────────
+model BranchInventory {
+  id        String   @id @default(uuid()) @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  stock     Int      @default(0) // físico en sucursal
+  reserved  Int      @default(0) // congelado por pedidos pagados/en curso
+  version   Int      @default(0) // bloqueo optimista
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  branch  Branch  @relation(fields: [branchId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  // CHECK (stock >= 0 AND reserved >= 0 AND reserved <= stock) → SQL de la migración
+  @@unique([branchId, productId])
+  @@index([productId, branchId])
+  @@map("branch_inventories")
+}
+
+// Historial inmutable de cada cambio de stock (auditoría y trazabilidad).
+model StockMovement {
+  id        String         @id @default(uuid()) @db.Uuid
+  branchId  String         @map("branch_id") @db.Uuid
+  productId String         @map("product_id") @db.Uuid
+  userId    String?        @map("user_id") @db.Uuid // null cuando el movimiento lo origina el sistema (una venta)
+  orderId   String?        @map("order_id") @db.Uuid
+  delta     Int // positivo = ingreso, negativo = egreso
+  reason    MovementReason
+  note      String?
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  branch  Branch  @relation(fields: [branchId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+  user    User?   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  // CHECK (delta <> 0) → SQL de la migración
+  @@index([branchId, createdAt])
+  @@index([productId, branchId, createdAt])
+  @@index([orderId])
+  @@map("stock_movements")
+}
+
+// ───────── Pedidos ─────────
+model Order {
+  id              String         @id @default(uuid()) @db.Uuid
+  number          Int            @unique @default(autoincrement())
+  customerId      String         @map("customer_id") @db.Uuid
+  branchId        String         @map("branch_id") @db.Uuid // sucursal que despacha/entrega
+  status          OrderStatus    @default(PENDING_PAYMENT)
+  deliveryMethod  DeliveryMethod @map("delivery_method")
+  shippingAddress String?        @map("shipping_address")
+  subtotal        Decimal        @default(0) @db.Decimal(12, 2)
+  shippingCost    Decimal        @default(0) @map("shipping_cost") @db.Decimal(12, 2)
+  total           Decimal        @db.Decimal(12, 2)
+  note            String?
+
+  // Pago
+  paymentProvider PaymentProvider? @map("payment_provider")
+  checkoutId      String?          @map("checkout_id") // preferencia creada en la pasarela
+  checkoutUrl     String?          @map("checkout_url")
+  paymentId       String?          @map("payment_id") // pago aprobado que cerró el pedido
+  paymentStatus   String?          @map("payment_status") // último estado informado por la pasarela
+  paymentIssue    String?          @map("payment_issue") // algo que requiere revisión humana (monto, pago tardío…)
+  paidAt          DateTime?        @map("paid_at")
+  // Mientras espera el pago el stock está reservado hasta esta hora; vencida, se libera sola.
+  expiresAt       DateTime?        @map("expires_at")
+  cancelledAt     DateTime?        @map("cancelled_at")
+  cancelReason    String?          @map("cancel_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  customer     Customer           @relation(fields: [customerId], references: [id])
+  branch       Branch             @relation(fields: [branchId], references: [id])
+  items        OrderItem[]
+  movements    StockMovement[]
+  statusEvents OrderStatusEvent[]
+
+  // CHECK (PENDING_PAYMENT → expires_at no nulo), índice parcial de vencimientos → SQL de la migración
+  @@unique([paymentProvider, paymentId])
+  @@index([branchId, status, createdAt])
+  @@index([customerId, createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String  @id @default(uuid()) @db.Uuid
+  orderId        String  @map("order_id") @db.Uuid
+  productId      String  @map("product_id") @db.Uuid
+  sku            String  @default("")
+  name           String  @default("") // nombre al momento de la compra (el del catálogo puede cambiar)
+  quantity       Int
+  unitPrice      Decimal @map("unit_price") @db.Decimal(12, 2) // precio de lista congelado
+  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(12, 2) // descuento por unidad congelado
+  promotionId    String? @map("promotion_id") @db.Uuid
+
+  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product    @relation(fields: [productId], references: [id])
+  promotion Promotion? @relation(fields: [promotionId], references: [id])
+
+  @@unique([orderId, productId])
+  @@index([productId])
+  @@index([promotionId])
+  @@map("order_items")
+}
+
+// ───────── Pasarelas de pago (configurables desde el backoffice) ─────────
+
+// Una fila por proveedor. Los secretos se guardan cifrados (AES-256-GCM); nunca salen de la API.
+model PaymentGateway {
+  id               String          @id @default(uuid()) @db.Uuid
+  provider         PaymentProvider @unique
+  isEnabled        Boolean         @default(false) @map("is_enabled")
+  mode             PaymentMode     @default(SANDBOX)
+  accessTokenEnc   String?         @map("access_token_enc")
+  publicKey        String?         @map("public_key")
+  webhookSecretEnc String?         @map("webhook_secret_enc")
+  // Cuenta del proveedor, obtenida al validar las credenciales.
+  accountId        String?         @map("account_id")
+  accountLabel     String?         @map("account_label")
+  siteId           String?         @map("site_id")
+  lastVerifiedAt   DateTime?       @map("last_verified_at")
+  lastError        String?         @map("last_error")
+  updatedById      String?         @map("updated_by_id") @db.Uuid
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  updatedBy User? @relation(fields: [updatedById], references: [id])
+
+  // CHECK (is_enabled → hay access token y clave de webhook) → SQL de la migración
+  @@map("payment_gateways")
+}
+
+// Notificaciones del proveedor con firma válida. El procesamiento (conciliar el pedido) llega con el checkout.
+model PaymentWebhookEvent {
+  id          String          @id @default(uuid()) @db.Uuid
+  provider    PaymentProvider
+  topic       String // type: payment, merchant_order…
+  action      String?
+  resourceId  String          @map("resource_id")
+  requestId   String?         @map("request_id")
+  liveMode    Boolean?        @map("live_mode")
+  payload     Json
+  receivedAt  DateTime        @default(now()) @map("received_at")
+  processedAt DateTime?       @map("processed_at")
+
+  // Reintentos del proveedor con el mismo x-request-id no duplican el evento (los NULL no chocan).
+  @@unique([provider, requestId])
+  @@index([provider, receivedAt])
+  @@index([provider, resourceId])
+  @@map("payment_webhook_events")
+}
+
+// Registro inmutable de acciones sensibles. Nunca contiene secretos.
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  actorId   String?  @map("actor_id") @db.Uuid
+  action    String
+  entity    String
+  entityId  String?  @map("entity_id")
+  metadata  Json?
+  ip        String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([entity, createdAt])
+  @@index([actorId, createdAt])
+  @@map("audit_logs")
+}
+
+// Historial inmutable de los estados por los que pasó un pedido: quién lo movió y cuándo.
+model OrderStatusEvent {
+  id         String       @id @default(uuid()) @db.Uuid
+  orderId    String       @map("order_id") @db.Uuid
+  fromStatus OrderStatus? @map("from_status") // null al crearse el pedido
+  toStatus   OrderStatus  @map("to_status")
+  userId     String?      @map("user_id") @db.Uuid // null cuando el cambio lo hace el sistema (pago, vencimiento)
+  note       String?
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  user  User? @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, createdAt])
+  @@index([userId, createdAt])
+  @@map("order_status_events")
+}
+
+// Historial inmutable de cambios de precio y costo: qué valía antes, qué vale ahora y quién lo cambió.
+// Los pedidos no dependen de esto: congelan su precio en `order_items`.
+model ProductPriceChange {
+  id           String   @id @default(uuid()) @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  userId       String?  @map("user_id") @db.Uuid
+  oldCost      Decimal  @map("old_cost") @db.Decimal(12, 2)
+  newCost      Decimal  @map("new_cost") @db.Decimal(12, 2)
+  oldRetail    Decimal  @map("old_retail") @db.Decimal(12, 2)
+  newRetail    Decimal  @map("new_retail") @db.Decimal(12, 2)
+  oldWholesale Decimal  @map("old_wholesale") @db.Decimal(12, 2)
+  newWholesale Decimal  @map("new_wholesale") @db.Decimal(12, 2)
+  note         String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([productId, createdAt])
+  @@index([createdAt])
+  @@map("product_price_changes")
+}

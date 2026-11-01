@@ -1,0 +1,23 @@
+{
+  "rootDir": ".",
+  "testRegex": ".*\\.e2e-spec\\.ts$",
+  "transform": {
+    "^.+\\.[tj]s$": [
+      "ts-jest",
+      {
+        "tsconfig": "<rootDir>/tsconfig.json"
+      }
+    ]
+  },
+  "testEnvironment": "node",
+  "globalSetup": "<rootDir>/support/global-setup.ts",
+  "globalTeardown": "<rootDir>/support/global-teardown.ts",
+  "setupFiles": [
+    "<rootDir>/support/env.ts"
+  ],
+  "testTimeout": 60000,
+  "maxWorkers": 1,
+  "transformIgnorePatterns": [
+    "/node_modules/(?!(@nestjs/jwt)/)"
+  ]
+}

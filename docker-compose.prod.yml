@@ -1,0 +1,70 @@
+# Producción (VPS). Se usa SIEMPRE junto con el archivo base:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Solo Caddy escucha en internet (80/443); backend, frontend, Postgres y Redis quedan en la red interna.
+name: omnistock
+
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    <<: *hardening
+    cap_add: [NET_BIND_SERVICE]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Definí APP_DOMAIN (ej. tienda.com.ar)}
+      ACME_EMAIL: ${ACME_EMAIL:?Definí ACME_EMAIL (avisos de vencimiento del certificado)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend: { condition: service_started }
+      backend: { condition: service_healthy }
+    networks: [internal, public]
+
+  backend:
+    image: ${REGISTRY:-ghcr.io/su-usuario}/omnistock-backend:${IMAGE_TAG:-latest}
+    <<: *hardening
+    ports: !reset []
+    read_only: true
+    tmpfs: ["/tmp"]
+    mem_limit: 1g
+    environment:
+      TRUST_PROXY: 1 # Caddy; la IP real del cliente la resuelve Caddy (ver deploy/Caddyfile)
+
+  frontend:
+    image: ${REGISTRY:-ghcr.io/su-usuario}/omnistock-frontend:${IMAGE_TAG:-latest}
+    <<: *hardening
+    ports: !reset []
+    read_only: true
+    tmpfs: ["/tmp", "/app/.next/cache"]
+    mem_limit: 768m
+
+  migrate:
+    image: ${REGISTRY:-ghcr.io/su-usuario}/omnistock-backend-tools:${IMAGE_TAG:-latest}
+
+  postgres:
+    <<: *hardening
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    mem_limit: 1g
+    # Parámetros pensados para un VPS chico; subirlos si crece la base.
+    command: ["postgres", "-c", "shared_buffers=256MB", "-c", "max_connections=60", "-c", "log_min_duration_statement=500"]
+
+  redis:
+    <<: *hardening
+    cap_add: [CHOWN, SETGID, SETUID] # el entrypoint de la imagen arranca como root y pasa al usuario redis
+    mem_limit: 256m
+
+volumes:
+  caddy_data:
+  caddy_config:

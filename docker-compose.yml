@@ -1,0 +1,141 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-America/Argentina/Buenos_Aires}
+      STORE_NAME: ${STORE_NAME:-ROEM-edemo}
+      MAIL_DRIVER: ${MAIL_DRIVER:-log}
+      MAIL_FROM: ${MAIL_FROM:-ROEM-edemo <no-reply@localhost>}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      REQUIRE_VERIFIED_EMAIL: ${REQUIRE_VERIFIED_EMAIL:-true}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      MEDIA_DIR: /app/uploads
+      MEDIA_PUBLIC_URL: ${MEDIA_PUBLIC_URL:-http://localhost:4000/media}
+      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:4000}
+      PUBLIC_STORE_URL: ${PUBLIC_STORE_URL:-http://localhost:3000}
+      MERCADOPAGO_API_URL: ${MERCADOPAGO_API_URL:-https://api.mercadopago.com}
+      ORDER_PAYMENT_WINDOW_MINUTES: ${ORDER_PAYMENT_WINDOW_MINUTES:-30}
+      ORDER_EXPIRY_INTERVAL_SECONDS: ${ORDER_EXPIRY_INTERVAL_SECONDS:-60}
+    volumes:
+      - mediadata:/app/uploads
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks: [internal, public]
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Se incrusta al compilar: es la dirección con la que el navegador llama a la API.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:4000}
+    restart: unless-stopped
+    environment:
+      # El servidor de Next llama a la API por la red interna, sin salir a internet.
+      API_INTERNAL_URL: http://backend:4000
+    depends_on:
+      backend: { condition: service_healthy }
+    ports:
+      - "3000:3000"
+    networks: [internal, public]
+
+  # Migraciones y seed (imagen de build, con el CLI de Prisma):
+  #   docker compose --profile tools run --rm migrate
+  #   docker compose --profile tools run --rm migrate npx prisma db seed
+  migrate:
+    build:
+      context: ./backend
+      target: build
+    profiles: [tools]
+    volumes:
+      - mediadata:/app/uploads
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SEED_SUPERADMIN_EMAIL: ${SEED_SUPERADMIN_EMAIL:-}
+      SEED_SUPERADMIN_PASSWORD: ${SEED_SUPERADMIN_PASSWORD:-}
+      SEED_DEMO_STAFF_PASSWORD: ${SEED_DEMO_STAFF_PASSWORD:-}
+      SEED_DEMO_CATALOG: ${SEED_DEMO_CATALOG:-false}
+      MEDIA_DIR: /app/uploads
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+
+  # Pruebas de integración contra una base y un Redis descartables (la base se crea sola, nunca toca `omnistock`):
+  #   docker compose --profile test run --rm --build e2e
+  e2e:
+    build:
+      context: ./backend
+      target: build
+    profiles: [test]
+    command: ["npm", "run", "test:e2e"]
+    environment:
+      E2E_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/omnistock_test
+      E2E_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [internal]
+
+networks:
+  internal:
+    internal: true # sin salida a internet ni acceso desde el host
+  public:
+
+volumes:
+  pgdata:
+  redisdata:
+  mediadata:

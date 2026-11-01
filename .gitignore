@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+.next/
+coverage/
+backups/
+.env.smoke
+.env.production

@@ -1,0 +1,10 @@
+node_modules
+.next
+.env*
+!.env.example
+*.log
+tsconfig.tsbuildinfo
+README.md
+e2e
+test-results
+playwright-report
