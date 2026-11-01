@@ -117,14 +117,14 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
       - name: Escaneo de vulnerabilidades (backend)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: omnistock-backend:ci
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
       - name: Escaneo de vulnerabilidades (frontend)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: omnistock-frontend:ci
           severity: CRITICAL,HIGH
