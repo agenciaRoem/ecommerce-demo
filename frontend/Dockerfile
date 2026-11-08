@@ -1,11 +1,11 @@
 # ───────── dependencias ─────────
-FROM node:24-alpine AS deps
+FROM node:25-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
 # ───────── build ─────────
-FROM node:24-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 # La URL pública de la API se incrusta en el bundle del navegador y en la política de contenido: va al compilar.
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000
@@ -16,7 +16,7 @@ COPY . .
 RUN npm run build
 
 # ───────── runtime ─────────
-FROM node:24-alpine AS runtime
+FROM node:25-alpine AS runtime
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
